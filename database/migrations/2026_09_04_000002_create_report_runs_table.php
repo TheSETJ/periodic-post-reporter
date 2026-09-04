@@ -11,13 +11,14 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('users', function (Blueprint $table) {
+        Schema::create('report_runs', function (Blueprint $table) {
             $table->id();
-            $table->string('email')->unique();
-            $table->string('username')->unique();
-            $table->string('password');
+            $table->foreignId('report_schedule_id')->constrained();
+            $table->timestamp('period_start');
+            $table->timestamp('period_end');
+            $table->string('status');
             $table->timestamps();
-            $table->softDeletes();
+            $table->unique(['report_schedule_id', 'period_start', 'period_end']);
         });
     }
 
@@ -26,6 +27,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('users');
+        Schema::dropIfExists('report_runs');
     }
 };
