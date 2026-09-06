@@ -9,5 +9,6 @@ Route::prefix('v1')->group(function () {
 
     Route::middleware('auth:sanctum')->group(function () {
         Route::post('/report-schedules', [ReportScheduleController::class, 'store']);
+        Route::get('/report-schedules', [ReportScheduleController::class, 'index']);
     });
 });
