@@ -4,6 +4,8 @@ namespace App\Providers;
 
 use App\Repositories\Contracts\PostSearchRepositoryInterface;
 use App\Repositories\ElasticsearchPostRepository;
+use App\Services\Contracts\ElasticsearchIndexManagerInterface;
+use App\Services\ElasticsearchIndexManager;
 use Elastic\Elasticsearch\Client as ElasticsearchClient;
 use Elastic\Elasticsearch\ClientBuilder as ElasticsearchClientBuilder;
 use Illuminate\Contracts\Foundation\Application;
@@ -24,6 +26,7 @@ class AppServiceProvider extends ServiceProvider
         });
 
         $this->app->bind(PostSearchRepositoryInterface::class, ElasticsearchPostRepository::class);
+        $this->app->bind(ElasticsearchIndexManagerInterface::class, ElasticsearchIndexManager::class);
     }
 
     /**
