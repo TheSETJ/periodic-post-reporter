@@ -1,59 +1,94 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Periodic Post Reporter
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+This project was built as a technical challenge for a backend developer position.
 
-## About Laravel
+## Prerequisites
+- Docker & Docker Compose
+- A bash-compatible shell (macOS/Linux Terminal, or WSL/Git Bash on Windows) — commands below use bash syntax and commands.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Ports & config
+Ensure ports `5432` (Postgres), `8000` (app), and `9200` (Elasticsearch) are free on the host.
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Setup
+1. Copy `.env.example` to `.env`
+2. In `.env`, set:
+   ```
+   DB_HOST=postgres
+   ELASTICSEARCH_HOST=elasticsearch
+   ```
+   (Docker Compose service names, not `127.0.0.1` — containers resolve each other by service name on the internal network.)
+3. `docker compose up -d` (runs migrations automatically)
+4. `docker compose exec app php artisan app:create-user {email} {username}`
+5. Place the provided posts JSON at `storage/app/private/seed-data.json`
+6. `docker compose exec app php artisan app:seed-elasticsearch`
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+App is available at `http://localhost:8000`.
 
-## Learning Laravel
+## Testing
+`docker compose exec app php artisan test`
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+## Scheduled reports
+`docker compose exec app php artisan app:dispatch-reports` — manual trigger; scheduled daily at 08:00 via Laravel's scheduler in production.
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## Known issue: Elasticsearch red status on startup
+If Elasticsearch's cluster health stays `red` after `docker compose up`, Docker Desktop's virtual disk usage may trigger ES's disk-based shard allocation watermark, blocking allocation even with adequate host disk space. Check:
+```
+curl http://localhost:9200/_cluster/health?pretty
+```
+If `status` is `red`, disable the watermark check (safe for local dev only):
+```
+curl -X PUT "localhost:9200/_cluster/settings" -H "Content-Type: application/json" -d '{"transient": {"cluster.routing.allocation.disk.threshold_enabled": false}}'
+curl -X POST "localhost:9200/_cluster/reroute?retry_failed=true"
+```
 
-## Laravel Sponsors
+## Known limitation
+Seed data is dated 2024; scheduled reports query the current date range, so live scheduled runs will show 0 posts against this static dataset. To verify search/histogram behavior end-to-end, either query Elasticsearch directly against a 2024 date range (see tests) rather than relying on the live scheduler, or update the seeded documents' `published_at` values to fall within the current date range before running `app:dispatch-reports`.
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+## Design notes & answers to task questions
 
-### Premium Partners
+**Scaling with request/user growth**
+- Stateless API (Sanctum tokens) — horizontally scale app instances behind a load balancer.
+- `DispatchReport` queue jobs scale independently of web traffic; add workers as report volume grows.
+- Elasticsearch scales via additional nodes/shards as index size grows; current single-shard config suits current data volume only.
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+**User-selectable delivery channels (one or more)**
+- Store `channels` as a JSON array on `report_schedules` (e.g. `['email', 'sms']`), not a single value, to support multi-select.
+- Use Laravel's Notification system instead of a direct `Mail::send` call: a `PostsReportNotification` implements `via()` returning the schedule's selected channels, with per-channel delivery defined in `toMail()`, `toSms()`, etc. Adding a new channel means adding one method and a driver, not touching dispatch logic.
+- Validate `channels` against a whitelist/enum at the request layer, consistent with how `period` is validated.
 
-## Contributing
+**Scaling with large historical data volume**
+- Partition `report_runs` by date range if history grows unbounded, keeping idempotency lookups fast.
+- Archive `report_runs` beyond a retention window to cold storage.
+- Existing unique index on `(report_schedule_id, period_start, period_end)` already covers the idempotency query pattern efficiently at scale.
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+**Load test / benchmark**
 
-## Code of Conduct
+`ab -n 100 -c 10` against `GET /api/v1/report-schedules` (authenticated):
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+- Requests per second: 37.45
+- Mean response time: 267 ms
+- P90: 283 ms
+- P95: 288 ms
+- P99: 291 ms
+- Failed requests: 0
 
-## Security Vulnerabilities
+Response times are dominated by Eloquent query + JSON serialization overhead at low concurrency; no failures observed at this load level. Elasticsearch-backed endpoints (report generation) were not load tested separately due to time constraints — recommended next step given ES query latency is the more likely bottleneck at scale.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+## Verifying the report pipeline manually
+The task's example uses "تهران" and "آلودگی" as keywords; this repo's seed data (2024-12-18 to 2024-12-21) can be queried directly with a Persian keyword to confirm search, histogram aggregation, and Excel export all work end-to-end:
 
-## License
+```bash
+docker compose exec app php artisan tinker --execute="
+    \$posts = app(\App\Repositories\Contracts\PostSearchRepositoryInterface::class);
+    \$histogram = \$posts->countByDay(['تهران', 'آلودگی'], \Carbon\Carbon::parse('2024-12-18'), \Carbon\Carbon::parse('2024-12-21'));
+    \Maatwebsite\Excel\Facades\Excel::store(new \App\Exports\PostsReportExport(\$histogram), 'report.xlsx', 'local');
+"
+docker compose cp app:/var/www/html/storage/app/private/report.xlsx ./report.xlsx
+```
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+Open `report.xlsx` to confirm the generated report contains a per-day post count for the given keyword and date range.
+
+## What I'd improve with more time
+- Broader test coverage, particularly integration tests against a real Elasticsearch instance (e.g. via Testcontainers) instead of mocked interfaces for the index manager and search repository.
+- More consistent request/response schema conventions across endpoints (e.g. unifying resource wrapping keys).
+- Applying the same architectural patterns (repository/service separation) uniformly across all resources, not only the Elasticsearch-backed ones.
